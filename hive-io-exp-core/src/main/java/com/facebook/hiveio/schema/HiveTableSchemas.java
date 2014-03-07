@@ -18,10 +18,12 @@
 
 package com.facebook.hiveio.schema;
 
+import com.facebook.hiveio.common.BackoffRetryTask;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.ThriftHiveMetastore;
+import org.apache.thrift.TException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,6 +32,10 @@ import com.facebook.hiveio.common.HiveTableDesc;
 import com.facebook.hiveio.common.HiveUtils;
 import com.facebook.hiveio.common.Writables;
 import com.google.common.base.Function;
+
+import static com.google.common.base.Preconditions.checkNotNull;
+
+import java.io.IOException;
 
 /**
  * Helpers for Hive schemas
@@ -73,18 +79,40 @@ public class HiveTableSchemas {
   }
 
   /**
-   * Get schema for a profile
+   * Get table schema from Configuration, or if it is not present get it from metastore and set
+   * it in Configuration
+   *
+   * @param conf Configuration
+   * @param profile Profile id
+   * @param tableName Name of the table
+   * @return HiveTableSchema
+   */
+  public static HiveTableSchema initTableSchema(Configuration conf, String profile,
+      final HiveTableDesc tableName) throws IOException {
+    checkNotNull(conf, "conf is null");
+    checkNotNull(profile, "profile is null");
+    checkNotNull(tableName, "tableName is null");
+    HiveTableSchema hiveTableSchema = getFromConf(conf, profile);
+    if (hiveTableSchema == null) {
+      hiveTableSchema = lookup(conf, tableName);
+      putToConf(conf, profile, hiveTableSchema);
+    }
+    return hiveTableSchema;
+  }
+
+  /**
+   * Get schema for a profile from Configuration
    *
    * @param conf Configuration
    * @param profile Profile ID
-   * @return schema
+   * @return Schema, or null if it's not present in the Configuration
    */
-  public static HiveTableSchema get(Configuration conf, String profile)
+  public static HiveTableSchema getFromConf(Configuration conf, String profile)
   {
     String key = profileKey(profile);
     String value = conf.get(key);
     if (value == null) {
-      throw new NullPointerException("No HiveTableSchema with key " + key + " found");
+      return null;
     }
     HiveTableSchema hiveTableSchema = new HiveTableSchemaImpl();
     Writables.readFieldsFromEncodedStr(value, hiveTableSchema);
@@ -92,14 +120,14 @@ public class HiveTableSchemas {
   }
 
   /**
-   * Put schema for profile
+   * Put schema for a profile to Configuration
    *
    * @param conf Configuration
    * @param profile Profile ID
    * @param hiveTableSchema schema
    */
-  public static void put(Configuration conf, String profile,
-                         HiveTableSchema hiveTableSchema) {
+  public static void putToConf(Configuration conf, String profile,
+                               HiveTableSchema hiveTableSchema) {
     conf.set(profileKey(profile), Writables.writeToEncodedStr(hiveTableSchema));
   }
 
@@ -109,20 +137,23 @@ public class HiveTableSchemas {
    * @param conf Configuration
    * @param tableName Hive table name
    * @return Hive table schema
+   * @throws IOException When there are metastore issues
    */
-  public static HiveTableSchema lookup(Configuration conf, HiveTableDesc tableName)
-  {
-    HiveConf hiveConf = HiveUtils.newHiveConf(conf, HiveTableSchemas.class);
-    ThriftHiveMetastore.Iface client;
-    Table table;
-    try {
-      client = HiveMetastores.create(hiveConf);
-      table = client.get_table(tableName.getDatabaseName(), tableName.getTableName());
-      // CHECKSTYLE: stop IllegalCatch
-    } catch (Exception e) {
-      // CHECKSTYLE: resume IllegalCatch
-      throw new IllegalStateException(e);
-    }
+  public static HiveTableSchema lookup(
+      Configuration conf,
+      final HiveTableDesc tableName) throws IOException {
+    final HiveConf hiveConf =
+        HiveUtils.newHiveConf(conf, HiveTableSchemas.class);
+    BackoffRetryTask<Table> backoffRetryTask =
+        new BackoffRetryTask<Table>(conf) {
+          @Override
+          public Table idempotentTask() throws TException {
+            ThriftHiveMetastore.Iface client = HiveMetastores.create(hiveConf);
+            return client.get_table(
+                tableName.getDatabaseName(), tableName.getTableName());
+          }
+        };
+    Table table = backoffRetryTask.run();
     return HiveTableSchemaImpl.fromTable(conf, table);
   }
 
