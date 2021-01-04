@@ -101,7 +101,7 @@ under the License.
     <dep.guava.version>14.0.1</dep.guava.version>
     <dep.hadoop.version>0.20.0</dep.hadoop.version>
     <dep.hive.version>0.11.0</dep.hive.version>
-    <dep.jackson.version>2.1.4</dep.jackson.version>
+    <dep.jackson.version>2.12.0</dep.jackson.version>
     <dep.metrics.version>2.2.0</dep.metrics.version>
     <dep.reflectasm.version>1.07</dep.reflectasm.version>
     <dep.sigar.version>1.6.5.132-5</dep.sigar.version>
